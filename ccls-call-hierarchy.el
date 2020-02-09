@@ -2,6 +2,7 @@
 
 ;; Copyright (C) 2017 Tobias Pisani
 ;; Copyright (C) 2018 Fangrui Song
+;; Copyright (C) 2020 Daniel Martín
 
 ;; Permission is hereby granted, free of charge, to any person obtaining a copy
 ;; of this software and associated documentation files (the "Software"), to deal
@@ -24,7 +25,7 @@
 ;;; Code:
 
 (require 'ccls-common)
-(require 'ccls-tree)
+(require 'lsp-treemacs)
 
 ;; ---------------------------------------------------------------------
 ;;   Customization
@@ -32,17 +33,17 @@
 
 (defface ccls-call-hierarchy-node-normal-face
   nil
-  "."
+  "Regular face to show in call hierarchy labels."
   :group 'ccls)
 
 (defface ccls-call-hierarchy-node-base-face
   '((t (:foreground "orange red")))
-  "."
+  "Face to show in call hierarchy labels when a symbol comes from the base class."
   :group 'ccls)
 
 (defface ccls-call-hierarchy-node-derived-face
   '((t (:foreground "orange")))
-  "."
+  "Face to show in call hierarchy labels when a symbol comes from the derived class."
   :group 'ccls)
 
 (defcustom ccls-call-hierarchy-qualified t
@@ -50,88 +51,163 @@
   :group 'ccls
   :type 'boolean)
 
-;; ---------------------------------------------------------------------
-;;   Tree node
-;; ---------------------------------------------------------------------
+(defcustom ccls-call-hierarchy-side-window 'bottom
+  "Position where the call hierarchy window will be shown."
+  :group 'ccls
+  :type '(choice (const :tag "Bottom of the selected frame" bottom)
+		 (const :tag "Left of the selected frame" left)
+		 (const :tag "Right of the selected frame" right)
+                 (const :tag "Top of the selected frame" top)))
 
 (cl-defstruct ccls-call-hierarchy-node
+  ;; Unique identifier for this node.
   id
+  ;; Kind of call site that this node represents.
+  call-type
+  ;; Label that will appear in Treemacs.
   name
-  call-type)
+  ;; Number of children nodes of this particular node.
+  num-children
+  ;; Source code location that this node represents.
+  location
+  ;; File name where the structure represented by this node is.
+  filename)
 
-(defun ccls-call-hierarchy--read-node (data &optional parent)
-  "Construct a call tree node from hashmap DATA and give it the parent PARENT"
-  (-let* ((location (gethash "location" data))
-          (filename (lsp--uri-to-path (gethash "uri" location)))
-          ((&hash "id" id "name" name "callType" call-type) data))
-    (make-ccls-tree-node
-     :location (cons filename (gethash "start" (gethash "range" location)))
-     :has-children (< 0 (gethash "numChildren" data))
-     :parent parent
-     :expanded nil
-     :children nil
-     :data (make-ccls-call-hierarchy-node
-            :id id
-            :name name
-            :call-type call-type))))
+(defun ccls-call-hierarchy--node-label (callee name filename num-children call-type)
+  "Create a label for a call hierarchy node.
+- CALLEE if the label show show callees; callers otherwise.
+- NAME is the symbol name that appears as title.
+- FILENAME is the file name that should appear in the label.
+- NUM-CHILDREN specifies if singular or plural should be used.
+- CALL-TYPE changes the face of the label depending on the type of caller/callee."
+  (let ((template (if (zerop num-children)
+                      (format "%s"
+                              (propertize (f-filename filename) 'face
+                                          (pcase call-type
+                                            ('0 'ccls-call-hierarchy-node-normal-face)
+                                            ('1 'ccls-call-hierarchy-node-base-face)
+                                            ('2 'ccls-call-hierarchy-node-derived-face))))
+                    (format
+                     "%s (%s %s)"
+                     (f-filename filename)
+                     num-children
+                     (let ((label (cond ((eq callee :json-false) "caller")
+                                        (t "callee"))))
+                       (if (< 1 num-children)
+                           (concat label "s")
+                         label))))))
+    (format "%s %s" name (propertize template 'face 'lsp-lens-face))))
 
-(defun ccls-call-hierarchy--request-children (callee node)
-  "."
-  (let ((id (ccls-call-hierarchy-node-id (ccls-tree-node-data node))))
-    (--map (ccls-call-hierarchy--read-node it node)
-           (gethash "children"
-                    (lsp-request
-                     "$ccls/call"
-                     `(:id ,id
-                           :callee ,callee
-                           :callType 3
-                           :levels ,ccls-tree-initial-levels
-                           :qualified ,(if ccls-call-hierarchy-qualified t :json-false)
-                           :hierarchy t))))))
+(defun ccls-call-hierarchy--create-treemacs-node (node callee)
+  "Create a Treemacs NODE for call hierarchy given CALLEE and some information."
+  (let ((id (ccls-call-hierarchy-node-id node))
+        (call-type (ccls-call-hierarchy-node-call-type node))
+        (name (ccls-call-hierarchy-node-name node))
+        (num-children (ccls-call-hierarchy-node-num-children node))
+        (location (ccls-call-hierarchy-node-location node))
+        (filename (ccls-call-hierarchy-node-filename node)))
+    (if (< 0 num-children)
+      (list :key id
+            :label (ccls-call-hierarchy--node-label
+                    callee name filename num-children call-type)
+            :children (lambda (_child)
+                        (--map (car (ccls-call-hierarchy--handle-references
+                                     it callee))
+                               (gethash "children"
+                                        (with-current-buffer ccls--source-code-buffer
+                                          (lsp-request
+                                           "$ccls/call"
+                                           (ccls-call-hierarchy--parameters
+                                            nil id callee))))))
+            :icon 'method
+            :ret-action (lambda (&rest _)
+                        (interactive)
+                        (ccls-common-treemacs-return-action filename location)))
+    (list :key id
+          :label (ccls-call-hierarchy--node-label
+                  callee name filename num-children call-type)
+          :icon 'method
+          :ret-action (lambda (&rest _)
+                        (interactive)
+                        (ccls-common-treemacs-return-action filename location))))))
 
-(defun ccls-call-hierarchy--request-init (callee)
-  "."
-  (lsp-request
-   "$ccls/call"
-   `(:textDocument (:uri ,(concat lsp--uri-file-prefix buffer-file-name))
-                   :position ,(lsp--cur-position)
-                   :callee ,callee
-                   :callType 3
-                   :qualified ,(if ccls-call-hierarchy-qualified t :json-false)
-                   :hierarchy t)))
+(defun ccls-call-hierarchy--handle-references (refs callee)
+  "Create Treemacs nodes from REFS, given CALLEE."
+  (->> (list refs)
+       (-map (lambda (ref)
+               (-let* ((location (gethash "location" ref '(nil . nil)))
+                       (filename (lsp--uri-to-path (gethash "uri" location)))
+                       ((&hash "id" "callType" "name" "children") ref)
+                       (node
+                        (make-ccls-call-hierarchy-node
+                         :id id :call-type callType :name name
+                         :num-children (length children)
+                         :location location :filename filename)))
+                 (ccls-call-hierarchy--create-treemacs-node node callee))))))
 
-(defun ccls-call-hierarchy--make-string (node depth)
-  "Propertize the name of NODE with the correct properties"
-  (let ((data (ccls-tree-node-data node)))
-    (if (= depth 0)
-        (ccls-call-hierarchy-node-name data)
-      (concat
-       (propertize (ccls-call-hierarchy-node-name data)
-                   'face (pcase (ccls-call-hierarchy-node-call-type data)
-                           ('0 'ccls-call-hierarchy-node-normal-face)
-                           ('1 'ccls-call-hierarchy-node-base-face)
-                           ('2 'ccls-call-hierarchy-node-derived-face)))
-       (propertize (format " (%s:%s)"
-                           (file-name-nondirectory (car (ccls-tree-node-location node)))
-                           (gethash "line" (cdr (ccls-tree-node-location node))))
-                   'face 'ccls-tree-mode-line-face)))))
+(defun ccls-call-hierarchy--search (method params title expand callee)
+  "Search and prepare the buffer for the call hierarchy call.
+- METHOD is the ccls method that will answer with call
+hierarchy information.
+- PARAMS are the parameters for METHOD.
+- TITLE is the name that the treemacs buffer will have.
+- EXPAND tells the Treemacs frontend if the nodes should appear expanded.
+- CALLEE controls if the API will return callees or callers."
+  (let ((search-buffer (get-buffer-create "*LSP Lookup*")))
+    (setq ccls--source-code-buffer (current-buffer))
+    (display-buffer-in-side-window search-buffer
+                                   `((side . ,ccls-call-hierarchy-side-window)))
+    (lsp-request-async
+     method
+     params
+     (lambda (refs)
+       (print refs)
+       (lsp-treemacs--set-mode-line-format search-buffer " Rendering results... ")
+       (lsp-with-cached-filetrue-name
+        (let ((lsp-file-truename-cache (ht)))
+          (lsp-treemacs-render
+           (ccls-call-hierarchy--handle-references refs callee)
+           title
+           expand)))
+       (lsp--info "Refresh completed!"))
+     :mode 'detached
+     :cancel-token :treemacs-lookup)
+
+    (with-current-buffer search-buffer
+      (lsp-treemacs-initialize)
+      (lsp-treemacs--set-mode-line-format search-buffer " Loading... ")
+      (setq-local lsp-treemacs-tree nil)
+      (lsp-treemacs-generic-refresh))))
+
+(defun ccls-call-hierarchy--parameters (initial-call id callee)
+  "Return the parameters for INITIAL-CALL or subsequent inheritance requests.
+ID identifies the object that should be queried and CALLEE
+controls if the call will return callees or callers."
+  (if initial-call
+      `(:textDocument (:uri ,(concat lsp--uri-file-prefix buffer-file-name))
+                      :position ,(lsp--cur-position)
+                      :callee ,callee
+                      :callType 3
+                      :qualified ,(if ccls-call-hierarchy-qualified t :json-false)
+                      :hierarchy t)
+    `(:id ,id
+          :callee ,callee
+          :callType 3
+          :levels ,ccls-tree-initial-levels
+          :qualified ,(if ccls-call-hierarchy-qualified t :json-false)
+          :hierarchy t)))
 
 (defun ccls-call-hierarchy (callee)
+  "Show the call hierarchy tree using ccls.
+With a prefix argument CALLEE, show the callee information instead."
   (interactive "P")
-  (setq callee (if callee t :json-false))
-  (ccls-tree--open
-   (make-ccls-tree-client
-    :name "call hierarchy"
-    :mode-line-format (format " %s %s %s %s"
-                              (propertize (if (eq callee t) "Callee types:" "Caller types:") 'face 'ccls-tree-mode-line-face)
-                              (propertize "Normal" 'face 'ccls-call-hierarchy-node-normal-face)
-                              (propertize "Base" 'face 'ccls-call-hierarchy-node-base-face)
-                              (propertize "Derived" 'face 'ccls-call-hierarchy-node-derived-face))
-    :top-line-f (lambda () (propertize (if (eq callee t) "Callees of " "Callers of") 'face 'ccls-tree-mode-line-face))
-    :make-string-f 'ccls-call-hierarchy--make-string
-    :read-node-f 'ccls-call-hierarchy--read-node
-    :request-children-f (apply-partially #'ccls-call-hierarchy--request-children callee)
-    :request-init-f (lambda () (ccls-call-hierarchy--request-init callee)))))
+  (let ((json-callee (if callee t :json-false)))
+    (ccls-call-hierarchy--search "$ccls/call"
+                                 (ccls-call-hierarchy--parameters
+                                  t nil json-callee)
+                                 " Call Viewer "
+                                 nil
+                                 json-callee)))
 
 (provide 'ccls-call-hierarchy)
 ;;; ccls-call-hierarchy.el ends here

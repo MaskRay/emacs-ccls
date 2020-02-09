@@ -25,6 +25,7 @@
 
 (require 'cc-mode)
 (require 'lsp)
+(require 'lsp-treemacs)
 (require 'cl-lib)
 (require 'seq)
 (require 'subr-x)
@@ -33,5 +34,30 @@
 (defgroup ccls nil
   "Customization options for the ccls client"
   :group 'tools)
+
+(defcustom ccls-tree-initial-levels 2
+  "Number of tree levels to fetch in custom $ccls methods."
+  :type 'integer
+  :group 'ccls)
+
+(defun ccls-common-treemacs-icon-from-kind (kind)
+  "Return a valid Treemacs icon from a ccls KIND."
+  (cond
+   ;; Invalid kind will be represented with a class icon.
+   ((zerop kind) 'class)
+   ((= 1 kind) 'file)
+   ((= 2 kind) 'class)
+   ((= 3 kind) 'function)
+   ((= 4 kind) 'localvariable)))
+
+(defun ccls-common-treemacs-return-action (filename location)
+  "Action that will occur when a node is clicked.
+FILENAME is the file that will be opened.
+LOCATION is the place in FILENAME that contains the symbol reference."
+  (lsp-treemacs--open-file-in-mru filename)
+  (goto-char (lsp--position-to-point
+              (gethash "start" (gethash "range" location))))
+  (recenter)
+  (run-hooks 'xref-after-jump-hook))
 
 (provide 'ccls-common)

@@ -7,7 +7,7 @@
 ;; Package-Version: 20180929.1
 ;; Version: 0.1
 ;; Homepage: https://github.com/MaskRay/emacs-ccls
-;; Package-Requires: ((emacs "25.1") (lsp-mode "4.2") (dash "0.14") (projectile "1.0.0"))
+;; Package-Requires: ((emacs "25.1") (lsp-mode "4.2") (dash "0.14") (projectile "1.0.0") (lsp-treemacs "0.1"))
 ;; Keywords: languages, lsp, c++
 
 ;; Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -38,7 +38,6 @@
 (require 'ccls-common)
 (require 'ccls-semantic-highlight)
 (require 'ccls-code-lens)
-(require 'ccls-tree)
 (require 'ccls-call-hierarchy)
 (require 'ccls-inheritance-hierarchy)
 (require 'ccls-member-hierarchy)
