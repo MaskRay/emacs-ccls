@@ -145,11 +145,10 @@ DIRECTION can be \"D\", \"L\", \"R\" or \"U\"."
                                 ccls-root-files))
          (expand-file-name dir))))
 
-(cl-defmethod lsp-execute-command
-  ((_server (eql ccls)) (command (eql ccls.xref)) arguments)
+(lsp-defun ccls--show-xrefs ((&Command :command :arguments?))
   (when-let ((xrefs (lsp--locations-to-xref-items
-                     (lsp--send-execute-command command arguments))))
-    (xref--show-xrefs xrefs nil)))
+                     (lsp--send-execute-command command arguments?))))
+    (lsp-show-xrefs xrefs nil t)))
 
 (advice-add 'lsp--suggest-project-root :before-until #'ccls--suggest-project-root)
 
@@ -162,6 +161,7 @@ DIRECTION can be \"D\", \"L\", \"R\" or \"U\"."
   :notification-handlers
   (lsp-ht ("$ccls/publishSkippedRanges" #'ccls--publish-skipped-ranges)
           ("$ccls/publishSemanticHighlight" #'ccls--publish-semantic-highlight))
+  :action-handlers (lsp-ht ("ccls.xref" #'ccls--show-xrefs))
   :initialization-options (lambda () ccls-initialization-options)
   :library-folders-fn ccls-library-folders-fn))
 
